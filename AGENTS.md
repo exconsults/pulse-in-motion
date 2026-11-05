@@ -28,3 +28,5 @@ use the editor.
   own key and store it in Secrets.
 - **Secrets.** Lovable manages them. Do not put secret values in the repo.
 <!-- LOVABLE:END -->
+
+- The Presage SmartSpectra SDK runs only natively (Node FFI), so it lives in `bridge/` as a local companion that streams metrics over ws://localhost:8787; the web app falls back to an in-browser pulse estimate when the bridge is absent. Why: the SDK can't run in the browser or on the edge runtime, and the API key must stay on the user's machine.

@@ -132,6 +132,28 @@
   --sidebar-ring: oklch(0.551 0.027 264.364);
 }
 
+:root {
+  --background: oklch(0.12 0.03 240);
+  --foreground: oklch(0.95 0.02 80);
+  --muted-foreground: oklch(0.72 0.03 80);
+  --primary: oklch(0.82 0.13 60);
+  --primary-foreground: oklch(0.15 0.03 240);
+  --destructive: oklch(0.72 0.17 25);
+  --border: oklch(0.95 0.02 80 / 15%);
+  --glass: oklch(0.15 0.03 240 / 45%);
+  --calm-hue: 195;
+  --tense-hue: 25;
+  --font-display: "Fraunces", Georgia, serif;
+  --font-body: "Space Grotesk", system-ui, sans-serif;
+  --font-mono-face: "JetBrains Mono", ui-monospace, monospace;
+}
+
+@theme inline {
+  --font-display: var(--font-display);
+  --font-sans: var(--font-body);
+  --font-mono: var(--font-mono-face);
+}
+
 @layer base {
   * {
     border-color: var(--color-border);
@@ -140,5 +162,17 @@
   body {
     background-color: var(--color-background);
     color: var(--color-foreground);
+    font-family: var(--font-body);
   }
+}
+
+@layer components {
+  .font-display { font-family: var(--font-display); font-weight: 300; letter-spacing: -0.02em; }
+  .eyebrow { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.2em; color: var(--muted-foreground); }
+  .stat { background: var(--glass); border: 1px solid var(--border); border-radius: var(--radius); padding: 0.9rem 1rem; backdrop-filter: blur(12px); }
+  .chip { border: 1px solid var(--border); background: var(--glass); border-radius: 999px; padding: 0.4rem 1rem; font-size: 0.85rem; backdrop-filter: blur(12px); transition: border-color .2s; }
+  .chip:hover { border-color: var(--primary); }
+  .cta { background: var(--primary); color: var(--primary-foreground); border-radius: 999px; padding: 0.9rem 2.2rem; font-weight: 500; box-shadow: 0 0 60px -10px var(--primary); transition: transform .2s; }
+  .cta:hover { transform: scale(1.04); }
+  .camera-thumb { position: absolute; right: 1.5rem; bottom: 7.5rem; width: 120px; border-radius: var(--radius); opacity: 0.5; transform: scaleX(-1); z-index: 20; }
 }
