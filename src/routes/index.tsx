@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { AudioEngine } from "@/lib/audio-engine";
 import { BrowserPulse } from "@/lib/browser-pulse";
+import { createFaceTracker, type Point } from "@/lib/face-tracker";
 import { fromPresagePayload, moodLabel, stressScore, type SignalSource, type Vitals } from "@/lib/signals";
 
 export const Route = createFileRoute("/")({
@@ -38,7 +39,12 @@ function Index() {
   const [paused, setPaused] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
+  const [face, setFace] = useState<"off" | "loading" | "ready" | "noface" | "error">("off");
+  const [faceError, setFaceError] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const pointsRef = useRef<Point[] | null>(null);
+  const lastSampled = useRef(0);
   const audio = useRef<AudioEngine | null>(null);
   const cleanup = useRef<() => void>(() => {});
 
@@ -49,9 +55,47 @@ function Index() {
   useEffect(() => { audio.current?.update(stress, vitals.pulse); }, [stress, vitals.pulse]);
   useEffect(() => () => { cleanup.current(); audio.current?.close(); }, []);
 
-  // Breathing guide clock
+  // Face dot overlay: canvas matches the video box (object-cover) and redraws every frame
   useEffect(() => {
-    if (!running || paused) return;
+    if (source !== "browser") return;
+    const cv = canvasRef.current, v = videoRef.current;
+    if (!cv || !v) return;
+    const ctx = cv.getContext("2d")!;
+    const fit = () => {
+      const dpr = window.devicePixelRatio || 1;
+      cv.width = Math.round(cv.clientWidth * dpr);
+      cv.height = Math.round(cv.clientHeight * dpr);
+    };
+    fit();
+    const ro = new ResizeObserver(fit);
+    ro.observe(cv);
+    const color = getComputedStyle(document.documentElement).getPropertyValue("--primary").trim() || "oklch(0.85 0.13 175)";
+    let raf = 0;
+    const draw = () => {
+      raf = requestAnimationFrame(draw);
+      ctx.clearRect(0, 0, cv.width, cv.height);
+      const pts = pointsRef.current;
+      if (!pts || !v.videoWidth) return;
+      const s = Math.max(cv.width / v.videoWidth, cv.height / v.videoHeight);
+      const ox = (cv.width - v.videoWidth * s) / 2, oy = (cv.height - v.videoHeight * s) / 2;
+      const r = Math.max(1, (window.devicePixelRatio || 1) * 1.1);
+      ctx.fillStyle = color;
+      ctx.globalAlpha = 0.6;
+      ctx.beginPath();
+      for (const p of pts) {
+        const x = ox + p.x * v.videoWidth * s, y = oy + p.y * v.videoHeight * s;
+        ctx.moveTo(x + r, y);
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+      }
+      ctx.fill();
+    };
+    draw();
+    return () => { cancelAnimationFrame(raf); ro.disconnect(); };
+  }, [source]);
+
+  // Breathing guide clock (starts once a live signal source is connected)
+  useEffect(() => {
+    if (!running || paused || source === "idle") return;
     let raf = 0;
     let last = performance.now();
     const tick = (now: number) => {
@@ -61,12 +105,17 @@ function Index() {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [running, paused]);
+  }, [running, paused, source]);
 
-  // Sample live signals once per second for sparklines + calm history
+  // Restart the breathing cycle at Inhale when the signal goes live
+  useEffect(() => { if (source !== "idle") setElapsed(0); }, [source]);
+
+  // Record real readings only (one point per new reading, max once a second)
   useEffect(() => {
     if (!running) return;
     const id = setInterval(() => {
+      if (!vitals.t || vitals.t === lastSampled.current) return;
+      lastSampled.current = vitals.t;
       setSeries((s) => {
         const push = (a: number[], v?: number) => (v && v > 0 ? [...a, v].slice(-40) : a);
         return {
@@ -78,7 +127,7 @@ function Index() {
       });
     }, 1000);
     return () => clearInterval(id);
-  }, [running, vitals.pulse, vitals.breathing, vitals.hrv, calm]);
+  }, [running, vitals.t, vitals.pulse, vitals.breathing, vitals.hrv, calm]);
 
   async function begin() {
     setError(null);
@@ -121,10 +170,32 @@ function Index() {
       const v = videoRef.current!;
       v.srcObject = stream;
       await v.play();
-      const est = new BrowserPulse(v, (pulse, breathing) => setVitals((p) => ({ ...p, pulse, breathing, t: Date.now() })));
+      const est = new BrowserPulse(v, (pulse, breathing) => {
+        if (!pulse && !breathing) return;
+        setVitals((p) => ({ ...p, pulse: pulse ?? p.pulse, breathing: breathing ?? p.breathing, t: Date.now() }));
+      });
       est.start();
       setSource("browser");
-      cleanup.current = () => { est.stop(); stream.getTracks().forEach((t) => t.stop()); };
+      let stopFace = () => {};
+      let alive = true;
+      cleanup.current = () => {
+        alive = false; est.stop(); stopFace(); pointsRef.current = null; setFace("off");
+        stream.getTracks().forEach((t) => t.stop());
+      };
+      setFace("loading");
+      setFaceError(null);
+      createFaceTracker(v, (f) => {
+        pointsRef.current = f.points;
+        est.setRoi(f.forehead);
+        setFace(f.points ? "ready" : "noface");
+        setVitals((p) => (p.expression === (f.points ? f.expression : undefined) ? p : { ...p, expression: f.points ? f.expression : undefined }));
+      })
+        .then((s) => { if (alive) stopFace = s; else s(); })
+        .catch((e) => {
+          console.error("face tracker", e);
+          setFace("error");
+          setFaceError("Face tracker failed to load. Check your connection and reload.");
+        });
     } catch (e) {
       console.error("camera", e);
       setError("Camera access was blocked. Allow the camera to start a session.");

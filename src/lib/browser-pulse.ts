@@ -16,14 +16,20 @@ export class BrowserPulse {
     this.canvas.height = 48;
   }
 
+  private roi: { x: number; y: number; w: number; h: number } | undefined;
+  setRoi(r: { x: number; y: number; w: number; h: number } | undefined) {
+    this.roi = r;
+  }
+
   start() {
     let lastEmit = 0;
     const loop = () => {
       this.raf = requestAnimationFrame(loop);
       if (this.video.readyState < 2) return;
       const vw = this.video.videoWidth, vh = this.video.videoHeight;
-      // centre-upper region where a face usually sits
-      this.ctx.drawImage(this.video, vw * 0.35, vh * 0.2, vw * 0.3, vh * 0.3, 0, 0, 64, 48);
+      // forehead from the face tracker when known, else centre-upper region
+      const r = this.roi ?? { x: 0.35, y: 0.2, w: 0.3, h: 0.3 };
+      this.ctx.drawImage(this.video, vw * r.x, vh * r.y, Math.max(1, vw * r.w), Math.max(1, vh * r.h), 0, 0, 64, 48);
       const d = this.ctx.getImageData(0, 0, 64, 48).data;
       let g = 0;
       for (let i = 1; i < d.length; i += 4) g += d[i]!;
