@@ -267,6 +267,12 @@ function Index() {
           {/* Camera panel */}
           <section className="relative aspect-[4/5] overflow-hidden rounded-[1.25rem] border border-border bg-panel sm:aspect-[4/3] md:aspect-auto md:min-h-[420px]">
             <video ref={videoRef} muted playsInline className={`absolute inset-0 h-full w-full -scale-x-100 object-cover ${source === "browser" ? "opacity-100" : "opacity-0"}`} />
+            <canvas ref={canvasRef} aria-hidden className={`pointer-events-none absolute inset-0 h-full w-full -scale-x-100 ${source === "browser" && face === "ready" ? "opacity-100" : "opacity-0"}`} />
+            {source === "browser" && face !== "ready" && face !== "off" && (
+              <div className="glass-chip absolute left-1/2 top-1/2 max-w-[85%] -translate-x-1/2 -translate-y-1/2 px-4 py-2.5 text-center text-sm">
+                {face === "loading" ? "Loading face tracker…" : face === "noface" ? "Looking for your face…" : faceError}
+              </div>
+            )}
             {source !== "browser" && (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 p-6 text-center">
                 {running && source === "presage" ? (
