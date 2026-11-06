@@ -41,6 +41,9 @@ function Index() {
   const [elapsed, setElapsed] = useState(0);
   const [face, setFace] = useState<"off" | "loading" | "ready" | "noface" | "error">("off");
   const [faceError, setFaceError] = useState<string | null>(null);
+  const [camOn, setCamOn] = useState(false);
+  const sourceRef = useRef<SignalSource>("idle");
+  sourceRef.current = source;
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const pointsRef = useRef<Point[] | null>(null);
@@ -57,7 +60,7 @@ function Index() {
 
   // Face dot overlay: canvas matches the video box (object-cover) and redraws every frame
   useEffect(() => {
-    if (source !== "browser") return;
+    if (!camOn) return;
     const cv = canvasRef.current, v = videoRef.current;
     if (!cv || !v) return;
     const ctx = cv.getContext("2d")!;
@@ -91,7 +94,7 @@ function Index() {
     };
     draw();
     return () => { cancelAnimationFrame(raf); ro.disconnect(); };
-  }, [source]);
+  }, [camOn]);
 
   // Breathing guide clock (starts once a live signal source is connected)
   useEffect(() => {
@@ -137,16 +140,36 @@ function Index() {
     setRunning(true);
     setElapsed(0);
 
-    let bridged = false;
-    const ws = new WebSocket(BRIDGE_URL);
-    const timeout = setTimeout(() => ws.close(), 1500);
+    const stopCam = await startBrowser();
+    if (!stopCam) return;
+    let ws: WebSocket;
+    try { ws = new WebSocket(BRIDGE_URL); } catch { return; }
+    ws.binaryType = "arraybuffer";
+    let sendTimer = 0;
+    const timeout = setTimeout(() => ws.close(), 2000);
+    cleanup.current = () => { clearInterval(sendTimer); ws.close(); stopCam(); };
     ws.onopen = () => {
       clearTimeout(timeout);
-      bridged = true;
       setSource("presage");
-      cleanup.current = () => ws.close();
+      // stream 320x240 RGBA frames (~15 fps) to the local SmartSpectra SDK
+      const W = 320, H = 240;
+      const cv = document.createElement("canvas");
+      cv.width = W; cv.height = H;
+      const cx = cv.getContext("2d", { willReadFrequently: true })!;
+      sendTimer = window.setInterval(() => {
+        const v = videoRef.current;
+        if (!v || v.readyState < 2 || ws.readyState !== 1 || ws.bufferedAmount > 2_000_000) return;
+        cx.drawImage(v, 0, 0, W, H);
+        const px = cx.getImageData(0, 0, W, H).data;
+        const out = new Uint8Array(4 + px.length);
+        new DataView(out.buffer).setUint16(0, W, true);
+        new DataView(out.buffer).setUint16(2, H, true);
+        out.set(px, 4);
+        ws.send(out);
+      }, 66);
     };
     ws.onmessage = (e) => {
+      if (typeof e.data !== "string") return;
       const msg = JSON.parse(e.data);
       if (msg.type === "metrics") {
         const v = fromPresagePayload(msg.metrics);
@@ -159,12 +182,12 @@ function Index() {
     };
     ws.onclose = () => {
       clearTimeout(timeout);
-      if (bridged) setSource("idle");
-      else void startBrowser();
+      clearInterval(sendTimer);
+      setSource((s) => (s === "presage" ? "browser" : s));
     };
   }
 
-  async function startBrowser() {
+  async function startBrowser(): Promise<(() => void) | null> {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: 640, height: 480 } });
       const v = videoRef.current!;
@@ -172,16 +195,19 @@ function Index() {
       await v.play();
       const est = new BrowserPulse(v, (pulse, breathing) => {
         if (!pulse && !breathing) return;
+        if (sourceRef.current === "presage") return; // SmartSpectra readings win
         setVitals((p) => ({ ...p, pulse: pulse ?? p.pulse, breathing: breathing ?? p.breathing, t: Date.now() }));
       });
       est.start();
       setSource("browser");
       let stopFace = () => {};
       let alive = true;
-      cleanup.current = () => {
-        alive = false; est.stop(); stopFace(); pointsRef.current = null; setFace("off");
+      setCamOn(true);
+      const stopAll = () => {
+        alive = false; est.stop(); stopFace(); pointsRef.current = null; setFace("off"); setCamOn(false);
         stream.getTracks().forEach((t) => t.stop());
       };
+      cleanup.current = stopAll;
       setFace("loading");
       setFaceError(null);
       createFaceTracker(v, (f) => {
@@ -196,9 +222,16 @@ function Index() {
           setFace("error");
           setFaceError("Face tracker failed to load. Check your connection and reload.");
         });
+      return stopAll;
     } catch (e) {
       console.error("camera", e);
-      setError("Camera access was blocked. Allow the camera to start a session.");
+      const name = (e as { name?: string })?.name;
+      setError(
+        name === "NotReadableError" ? "Camera is busy in another app. Close it and try again."
+        : name === "NotFoundError" ? "No camera found on this device."
+        : "Camera access was blocked. Allow the camera in your browser to start.",
+      );
+      return null;
     }
   }
 
@@ -266,14 +299,14 @@ function Index() {
         <div className="grid gap-4 md:grid-cols-2 lg:gap-6 xl:grid-cols-[1fr_1fr_1fr]">
           {/* Camera panel */}
           <section className="relative aspect-[4/5] overflow-hidden rounded-[1.25rem] border border-border bg-panel sm:aspect-[4/3] md:aspect-auto md:min-h-[420px]">
-            <video ref={videoRef} muted playsInline className={`absolute inset-0 h-full w-full -scale-x-100 object-cover ${source === "browser" ? "opacity-100" : "opacity-0"}`} />
-            <canvas ref={canvasRef} aria-hidden className={`pointer-events-none absolute inset-0 h-full w-full -scale-x-100 ${source === "browser" && face === "ready" ? "opacity-100" : "opacity-0"}`} />
-            {source === "browser" && face !== "ready" && face !== "off" && (
+            <video ref={videoRef} muted playsInline className={`absolute inset-0 h-full w-full -scale-x-100 object-cover ${camOn ? "opacity-100" : "opacity-0"}`} />
+            <canvas ref={canvasRef} aria-hidden className={`pointer-events-none absolute inset-0 h-full w-full -scale-x-100 ${camOn && face === "ready" ? "opacity-100" : "opacity-0"}`} />
+            {camOn && face !== "ready" && face !== "off" && (
               <div className="glass-chip absolute left-1/2 top-1/2 max-w-[85%] -translate-x-1/2 -translate-y-1/2 px-4 py-2.5 text-center text-sm">
                 {face === "loading" ? "Loading face tracker…" : face === "noface" ? "Looking for your face…" : faceError}
               </div>
             )}
-            {source !== "browser" && (
+            {!camOn && (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 p-6 text-center">
                 {running && source === "presage" ? (
                   <>
