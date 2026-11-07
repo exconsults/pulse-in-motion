@@ -10,14 +10,34 @@ Needs Node.js 20+ and macOS Apple Silicon, Windows x64, or Linux (glibc 2.35+). 
 - **Windows:** double-click `start-windows.bat`
 - **Mac / Linux:** double-click `start-mac-linux.command` (first time: `chmod +x start-mac-linux.command`)
 
-It installs once, asks for your API key once (saved to `bridge/.env`, never committed), then runs.
+Install Node.js 20+ first. It installs dependencies once, asks for your API key once (saved to `bridge/.env`, never committed), then runs. Keep the window open. Double-clicking still opens a local command window: a website cannot launch native software by itself.
 
 ## Terminal
     cd bridge
     npm install
-    echo SMARTSPECTRA_API_KEY=your_key > .env
     npm start
+
+`npm start` asks for the key if needed; no key-in-command syntax is necessary, including on Windows. Use a newly issued key if your old key was shared in chat. To replace a rejected key, delete `bridge/.env` and launch again.
 
 Open CalmPulse in **Chrome or Edge** on the same computer and press **Allow camera & begin**.
 The badge reads **Live · SmartSpectra**. Safari blocks connections to localhost from https pages.
 If Chrome asks to allow "local network access", click Allow.
+
+## Troubleshooting
+- The terminal never opens the camera. Open the web app and press **Allow camera & begin**.
+- Close Zoom/Teams or other camera apps if the camera is busy. Allow camera permission for this site and retry.
+- “API key rejected (403)” means Presage rejected authentication; check your new key and Presage account access.
+- “Port 8787 is already in use” means another companion window is open; close it first.
+- Face landmarks need internet for model/software downloads. Face-tracker errors are shown on the camera.
+- Wait for readings with your face well lit and still. HRV requires SmartSpectra; browser estimates are not medical measurements.
+- Only one CalmPulse tab can use the companion at a time. The listener is restricted to this computer.
+
+## Published website
+The companion accepts this project's preview and local development origins. When you publish or use a custom domain, add the exact website origin to `bridge/.env`:
+
+    CALMPULSE_ALLOWED_ORIGINS=https://your-actual-site.lovable.app
+
+Use your real site address, not the example. Restart the companion after changing it. Multiple origins can be comma-separated. This prevents arbitrary websites from connecting to the native SDK.
+
+## Data handling and verification
+Camera frames and readings are transient; the bridge does not save them. The API key persists in `.env` until you delete it. SmartSpectra needs internet for its service. SDK telemetry/vendor retention have not been independently audited. No optional AI service is used. Native live measurements must still be verified on a supported computer with a valid key and a real face before claiming production readiness.

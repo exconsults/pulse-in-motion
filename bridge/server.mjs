@@ -8,6 +8,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { WebSocketServer } from "ws";
+import { decodeFrame } from "./protocol.mjs";
 import {
   SmartSpectraSDK, PixelFormat, FrameTransform, decodeMetrics,
   breathingMetrics, cardioMetrics,
@@ -34,7 +35,23 @@ const HINTS = {
 };
 
 const PORT = 8787;
-const wss = new WebSocketServer({ port: PORT });
+const allowedOrigins = new Set([
+  "https://id-preview--a5b89a70-3c1d-4ea8-b074-459e5d6d9822.lovable.app",
+  "https://a5b89a70-3c1d-4ea8-b074-459e5d6d9822.lovableproject.com",
+  ...(process.env.CALMPULSE_ALLOWED_ORIGINS || "").split(",").map((s) => s.trim()).filter(Boolean),
+]);
+const wss = new WebSocketServer({
+  host: "127.0.0.1", port: PORT, maxPayload: 4 + 1920 * 1080 * 4,
+  verifyClient: ({ origin }) => {
+    if (allowedOrigins.has(origin)) return true;
+    try { const u = new URL(origin); return u.protocol === "http:" && ["localhost", "127.0.0.1"].includes(u.hostname); }
+    catch { return false; }
+  },
+});
+wss.on("error", (e) => {
+  console.error(e.code === "EADDRINUSE" ? "Port 8787 is already in use. Close the other companion window, then try again." : "The companion could not listen: " + e.message);
+  process.exitCode = 1;
+});
 const send = (msg) => {
   const s = JSON.stringify(msg);
   for (const c of wss.clients) if (c.readyState === 1) c.send(s);
@@ -43,13 +60,18 @@ const send = (msg) => {
 let sdk = null;
 let lastTs = 0;
 let failed = false;
+let activeClient = null;
+let stopping = Promise.resolve();
 
 async function startSdk() {
   if (sdk) return;
   sdk = new SmartSpectraSDK({ apiKey, requestedMetrics: [...breathingMetrics, ...cardioMetrics] });
   sdk.on("metrics", (buf) => {
-    const m = decodeMetrics(buf);
-    if (!Buffer.isBuffer(m)) send({ type: "metrics", metrics: m });
+    try {
+      const m = decodeMetrics(buf);
+      if (!Buffer.isBuffer(m)) send({ type: "metrics", metrics: m });
+      else send({ type: "error", message: "SDK metrics decoder unavailable. Reinstall companion dependencies." });
+    } catch { send({ type: "error", message: "Unable to decode SmartSpectra readings. Restart the companion." }); }
   });
   sdk.on("validationStatus", (code, _ts, hint) => send({ type: "hint", hint: HINTS[code] ?? hint ?? "" }));
   sdk.on("error", (code, message) => {
@@ -74,21 +96,36 @@ async function stopSdk() {
 }
 
 wss.on("connection", async (ws) => {
+  if (activeClient) { ws.close(1008, "A session is already active. Close the other CalmPulse tab."); return; }
+  activeClient = ws;
+  ws.on("error", () => ws.close());
+  ws.on("close", () => {
+    console.log("CalmPulse disconnected.");
+    stopping = stopSdk().finally(() => { if (activeClient === ws) activeClient = null; });
+  });
   console.log("CalmPulse connected.");
-  try { await startSdk(); } catch (e) {
-    ws.send(JSON.stringify({ type: "error", message: String(e?.message ?? e) }));
+  try {
+    await stopping;
+    if (ws.readyState !== 1) return;
+    await startSdk();
+  } catch (e) {
+    if (ws.readyState === 1) ws.send(JSON.stringify({ type: "error", message: String(e?.message ?? e) }));
+    await stopSdk();
+    ws.close();
+    return;
   }
   ws.on("message", (data, isBinary) => {
     if (!isBinary || !sdk) return;
     // frame layout: [u16 width][u16 height] + RGBA pixels
     const b = Buffer.isBuffer(data) ? data : Buffer.from(data);
-    const w = b.readUInt16LE(0), h = b.readUInt16LE(2);
-    if (b.length < 4 + w * h * 4) return;
+    const frame = decodeFrame(b);
+    if (!frame) { ws.close(1008, "Invalid camera frame"); return; }
+    const { width: w, height: h, pixels } = frame;
     let ts = Math.round(performance.now() * 1000);
     if (ts <= lastTs) ts = lastTs + 1;
     lastTs = ts;
     try {
-      sdk.sendFrame(b.subarray(4, 4 + w * h * 4), w, h, w * 4, PixelFormat.kRGBA, ts);
+      sdk.sendFrame(pixels, w, h, w * 4, PixelFormat.kRGBA, ts);
     } catch (e) {
       if (!failed) {
         failed = true;
@@ -98,11 +135,7 @@ wss.on("connection", async (ws) => {
       }
     }
   });
-  ws.on("close", () => {
-    console.log("CalmPulse disconnected.");
-    if (wss.clients.size === 0) void stopSdk();
-  });
 });
 
-console.log(`Bridge ready on ws://localhost:${PORT} — open CalmPulse and press "Allow camera & begin". Keep this window open.`);
+wss.on("listening", () => console.log(`Bridge ready on ws://localhost:${PORT} — open CalmPulse in Chrome/Edge and press "Allow camera & begin". Keep this window open.`));
 process.on("SIGINT", async () => { await stopSdk(); process.exit(0); });

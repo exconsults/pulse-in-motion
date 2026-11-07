@@ -1,9 +1,16 @@
 @echo off
 cd /d "%~dp0"
-if not exist node_modules call npm install
-if not exist .env (
-  set /p KEY=Paste your SmartSpectra API key and press Enter: 
-  call echo SMARTSPECTRA_API_KEY=%%KEY%%> .env
+where node >nul 2>nul
+if errorlevel 1 (
+  echo Install Node.js 20+ from nodejs.org, then reopen this launcher.
+  pause
+  exit /b 1
 )
-node server.mjs
+if not exist node_modules call npm install
+if errorlevel 1 (
+  echo Installation failed. Check your internet connection and try again.
+  pause
+  exit /b 1
+)
+node launch.mjs
 pause

@@ -6,7 +6,7 @@ export class BrowserPulse {
   private samples: { t: number; g: number }[] = [];
   private raf = 0;
   private canvas = document.createElement("canvas");
-  private ctx = this.canvas.getContext("2d", { willReadFrequently: true })!;
+  private ctx = this.canvas.getContext("2d", { willReadFrequently: true });
 
   constructor(
     private video: HTMLVideoElement,
@@ -18,6 +18,7 @@ export class BrowserPulse {
 
   private roi: { x: number; y: number; w: number; h: number } | undefined;
   setRoi(r: { x: number; y: number; w: number; h: number } | undefined) {
+    if (!r) this.samples = [];
     this.roi = r;
   }
 
@@ -25,17 +26,17 @@ export class BrowserPulse {
     let lastEmit = 0;
     const loop = () => {
       this.raf = requestAnimationFrame(loop);
-      if (this.video.readyState < 2) return;
+      if (this.video.readyState < 2 || !this.ctx || !this.roi) return;
       const vw = this.video.videoWidth, vh = this.video.videoHeight;
       // forehead from the face tracker when known, else centre-upper region
-      const r = this.roi ?? { x: 0.35, y: 0.2, w: 0.3, h: 0.3 };
+      const r = this.roi;
       this.ctx.drawImage(this.video, vw * r.x, vh * r.y, Math.max(1, vw * r.w), Math.max(1, vh * r.h), 0, 0, 64, 48);
       const d = this.ctx.getImageData(0, 0, 64, 48).data;
       let g = 0;
-      for (let i = 1; i < d.length; i += 4) g += d[i]!;
+      for (let i = 1; i < d.length; i += 4) g += d[i] ?? 0;
       const now = performance.now();
       this.samples.push({ t: now, g: g / (d.length / 4) });
-      while (this.samples.length && now - this.samples[0]!.t > 12000) this.samples.shift();
+      while (this.samples[0] && now - this.samples[0].t > 12000) this.samples.shift();
       if (now - lastEmit > 1000 && this.samples.length > 150) {
         lastEmit = now;
         this.onPulse(this.dominant(0.75, 3), this.dominant(0.15, 0.5));
@@ -47,7 +48,9 @@ export class BrowserPulse {
   /** Strongest frequency (per minute) between lo and hi Hz. */
   private dominant(lo: number, hi: number) {
     const s = this.samples;
-    const dur = (s[s.length - 1]!.t - s[0]!.t) / 1000;
+    const first = s[0], last = s.at(-1);
+    if (!first || !last) return undefined;
+    const dur = (last.t - first.t) / 1000;
     if (dur < 8) return undefined;
     const mean = s.reduce((a, b) => a + b.g, 0) / s.length;
     let best = 0, bestF = 0;

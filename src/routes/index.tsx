@@ -1,4 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { Button } from "@/components/ui/button";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { AudioEngine } from "@/lib/audio-engine";
 import { BrowserPulse } from "@/lib/browser-pulse";
@@ -50,6 +51,8 @@ function Index() {
   const lastSampled = useRef(0);
   const audio = useRef<AudioEngine | null>(null);
   const cleanup = useRef<() => void>(() => {});
+  const session = useRef(0);
+  const starting = useRef(false);
 
   const score = stressScore(vitals);
   const stress = score ?? 0.3;
@@ -63,7 +66,8 @@ function Index() {
     if (!camOn) return;
     const cv = canvasRef.current, v = videoRef.current;
     if (!cv || !v) return;
-    const ctx = cv.getContext("2d")!;
+    const ctx = cv.getContext("2d");
+    if (!ctx) return;
     const fit = () => {
       const dpr = window.devicePixelRatio || 1;
       cv.width = Math.round(cv.clientWidth * dpr);
@@ -133,29 +137,42 @@ function Index() {
   }, [running, vitals.t, vitals.pulse, vitals.breathing, vitals.hrv, calm]);
 
   async function begin() {
+    if (starting.current || running) return;
+    starting.current = true;
+    const attempt = ++session.current;
     setError(null);
-    audio.current = new AudioEngine();
-    await audio.current.start();
-    audio.current.setMuted(muted);
+    try {
+      audio.current = new AudioEngine();
+      await audio.current.start();
+      audio.current.setMuted(muted);
+    } catch {
+      setError("Sound is unavailable. You can still use the camera and breathing guide.");
+    }
+    if (session.current !== attempt) { starting.current = false; return; }
     setRunning(true);
     setElapsed(0);
+    setPaused(false);
+    setSeries({ pulse: [], breathing: [], hrv: [], calm: [] });
+    lastSampled.current = 0;
 
-    const stopCam = await startBrowser();
-    if (!stopCam) return;
+    const stopCam = await startBrowser(attempt);
+    starting.current = false;
+    if (!stopCam || session.current !== attempt) return;
     let ws: WebSocket;
     try { ws = new WebSocket(BRIDGE_URL); } catch { return; }
     ws.binaryType = "arraybuffer";
     let sendTimer = 0;
     const timeout = setTimeout(() => ws.close(), 2000);
-    cleanup.current = () => { clearInterval(sendTimer); ws.close(); stopCam(); };
+    cleanup.current = () => { clearTimeout(timeout); clearInterval(sendTimer); ws.close(); stopCam(); };
     ws.onopen = () => {
+      if (session.current !== attempt) { ws.close(); return; }
       clearTimeout(timeout);
-      setSource("presage");
       // stream 320x240 RGBA frames (~15 fps) to the local SmartSpectra SDK
       const W = 320, H = 240;
       const cv = document.createElement("canvas");
       cv.width = W; cv.height = H;
-      const cx = cv.getContext("2d", { willReadFrequently: true })!;
+      const cx = cv.getContext("2d", { willReadFrequently: true });
+      if (!cx) { ws.close(); return; }
       sendTimer = window.setInterval(() => {
         const v = videoRef.current;
         if (!v || v.readyState < 2 || ws.readyState !== 1 || ws.bufferedAmount > 2_000_000) return;
@@ -169,61 +186,84 @@ function Index() {
       }, 66);
     };
     ws.onmessage = (e) => {
-      if (typeof e.data !== "string") return;
-      const msg = JSON.parse(e.data);
+      if (session.current !== attempt || typeof e.data !== "string") return;
+      let msg;
+      try { msg = JSON.parse(e.data); } catch { return; }
       if (msg.type === "metrics") {
         const v = fromPresagePayload(msg.metrics);
+        if (![v.pulse, v.breathing, v.hrv].some((x) => typeof x === "number" && Number.isFinite(x) && x > 0)) return;
+        sourceRef.current = "presage";
+        setSource("presage");
         setVitals((p) => ({ ...p, ...Object.fromEntries(Object.entries(v).filter(([, x]) => x != null)), t: Date.now() }));
       } else if (msg.type === "hint") {
         setVitals((p) => ({ ...p, hint: msg.hint || undefined }));
       } else if (msg.type === "error") {
         setError(msg.message);
+        ws.close();
       }
     };
     ws.onclose = () => {
       clearTimeout(timeout);
       clearInterval(sendTimer);
-      setSource((s) => (s === "presage" ? "browser" : s));
+      if (session.current !== attempt) return;
+      sourceRef.current = "browser";
+      setSource("browser");
+      setVitals((p) => ({ expression: p.expression, t: 0 }));
     };
   }
 
-  async function startBrowser(): Promise<(() => void) | null> {
+  async function startBrowser(attempt: number): Promise<(() => void) | null> {
+    let stream: MediaStream | undefined;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: 640, height: 480 } });
-      const v = videoRef.current!;
+      if (!navigator.mediaDevices?.getUserMedia) throw new Error("Camera requires HTTPS or localhost.");
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: 640, height: 480 } });
+      const activeStream = stream;
+      const v = videoRef.current;
+      if (!v || session.current !== attempt) { stream.getTracks().forEach((t) => t.stop()); return null; }
       v.srcObject = stream;
       await v.play();
+      if (session.current !== attempt) { stream.getTracks().forEach((t) => t.stop()); v.srcObject = null; return null; }
       const est = new BrowserPulse(v, (pulse, breathing) => {
+        if (session.current !== attempt) return;
         if (!pulse && !breathing) return;
         if (sourceRef.current === "presage") return; // SmartSpectra readings win
         setVitals((p) => ({ ...p, pulse: pulse ?? p.pulse, breathing: breathing ?? p.breathing, t: Date.now() }));
       });
       est.start();
+      sourceRef.current = "browser";
       setSource("browser");
       let stopFace = () => {};
       let alive = true;
       setCamOn(true);
       const stopAll = () => {
         alive = false; est.stop(); stopFace(); pointsRef.current = null; setFace("off"); setCamOn(false);
-        stream.getTracks().forEach((t) => t.stop());
+        activeStream.getTracks().forEach((t) => t.stop());
+        v.srcObject = null;
       };
       cleanup.current = stopAll;
       setFace("loading");
       setFaceError(null);
       createFaceTracker(v, (f) => {
+        if (!alive || session.current !== attempt) return;
         pointsRef.current = f.points;
         est.setRoi(f.forehead);
         setFace(f.points ? "ready" : "noface");
+        if (!f.points && sourceRef.current === "browser") {
+          setVitals({ t: 0 });
+        }
         setVitals((p) => (p.expression === (f.points ? f.expression : undefined) ? p : { ...p, expression: f.points ? f.expression : undefined }));
       })
         .then((s) => { if (alive) stopFace = s; else s(); })
         .catch((e) => {
+          if (!alive || session.current !== attempt) return;
           console.error("face tracker", e);
           setFace("error");
           setFaceError("Face tracker failed to load. Check your connection and reload.");
         });
       return stopAll;
     } catch (e) {
+      stream?.getTracks().forEach((t) => t.stop());
+      if (session.current !== attempt) return null;
       console.error("camera", e);
       const name = (e as { name?: string })?.name;
       setError(
@@ -231,18 +271,26 @@ function Index() {
         : name === "NotFoundError" ? "No camera found on this device."
         : "Camera access was blocked. Allow the camera in your browser to start.",
       );
+      audio.current?.close();
+      audio.current = null;
+      setRunning(false);
+      setSource("idle");
       return null;
     }
   }
 
   function stop() {
+    session.current += 1;
     cleanup.current();
     cleanup.current = () => {};
     audio.current?.close();
     audio.current = null;
     setRunning(false);
     setSource("idle");
+    sourceRef.current = "idle";
     setVitals({ t: 0 });
+    setSeries({ pulse: [], breathing: [], hrv: [], calm: [] });
+    lastSampled.current = 0;
   }
 
   // Breathing phase
@@ -250,15 +298,19 @@ function Index() {
   let acc = 0;
   let phaseIdx = 0;
   for (let i = 0; i < PHASES.length; i++) {
-    const secs = PHASES[i]!.secs;
+    const secs = PHASES[i]?.secs ?? 0;
     if (inCycle < acc + secs) { phaseIdx = i; break; }
     acc += secs;
   }
-  const phase = PHASES[phaseIdx]!;
+  const phase = PHASES[phaseIdx] ?? PHASES[0];
+  if (!phase) return null;
   const phaseLeft = Math.ceil(acc + phase.secs - inCycle);
 
-  const delta = (a: number[]) => (a.length > 5 ? Math.round(a[a.length - 1]! - a[a.length - 6]!) : undefined);
-  const mood = vitals.expression ?? (score === null ? "Waiting" : score < 0.45 ? "Relaxed" : score < 0.65 ? "Focused" : "Tense");
+  const delta = (a: number[]) => {
+    const current = a.at(-1), previous = a.at(-6);
+    return current !== undefined && previous !== undefined ? Math.round(current - previous) : undefined;
+  };
+  const mood = vitals.expression ?? "Detecting…";
   const firstCalm = series.calm[0]?.v;
   const sourceLabel = source === "presage" ? "Live · SmartSpectra" : source === "browser" ? "Live · browser estimate" : running ? "Connecting…" : "Camera off";
 
@@ -290,7 +342,7 @@ function Index() {
                 <button onClick={stop} className="rounded-full border border-pulse/40 px-3 py-1.5 text-sm font-medium text-pulse hover:bg-pulse/10">End</button>
               </>
             )}
-            <p className="hidden text-right text-sm leading-tight text-muted-foreground xl:block">A calmer you<br />brighter tomorrow</p>
+            <p className="hidden whitespace-nowrap text-right text-sm leading-tight text-muted-foreground 2xl:block">A calmer you, brighter tomorrow</p>
           </div>
         </div>
       </header>
@@ -320,9 +372,10 @@ function Index() {
                     <p className="max-w-sm text-sm text-muted-foreground">
                       CalmPulse uses your camera to read pulse, breathing and HRV. Everything is processed on your device and nothing is recorded or uploaded.
                     </p>
-                    <button onClick={begin} className="rounded-full bg-primary px-6 py-3 font-semibold text-primary-foreground shadow-[0_0_40px_-8px_var(--primary)] transition-transform hover:scale-105">
+                    <Button onClick={begin} className="h-auto rounded-full bg-primary px-6 py-3 font-semibold text-primary-foreground shadow-[0_0_40px_-8px_var(--primary)] transition-transform hover:scale-105">
                       Allow camera & begin
-                    </button>
+                    </Button>
+                    {error && <p role="alert" className="max-w-sm text-sm text-pulse">{error}</p>}
                     <a href="#privacy" className="text-xs text-muted-foreground underline underline-offset-4">How your data is handled</a>
                   </>
                 ) : (
@@ -335,9 +388,9 @@ function Index() {
               {sourceLabel}
             </div>
             {running && (
-              <div className="glass-chip absolute bottom-4 left-1/2 flex max-w-[90%] -translate-x-1/2 items-center gap-2 px-4 py-2.5 text-sm">
+              <div className="glass-chip absolute bottom-4 left-1/2 flex w-max max-w-[90%] -translate-x-1/2 items-center gap-2 px-4 py-2.5 text-sm">
                 <WaveIcon className="h-4 w-4 shrink-0 text-pulse" />
-                <span className="truncate">{error ?? vitals.hint ?? "Tracking calm signals"}</span>
+                <span role={error ? "alert" : "status"}>{error ?? vitals.hint ?? (score === null ? "Waiting for signal…" : "Tracking calm signals")}</span>
               </div>
             )}
           </section>
@@ -385,6 +438,7 @@ function Index() {
               <div className="min-w-0 flex-1">
                 <p className="text-muted-foreground">Mood</p>
                 <p className="truncate text-2xl font-semibold capitalize">{running ? mood : "—"}</p>
+                {running && !vitals.expression && <p className="text-xs text-muted-foreground">{face === "noface" ? "Looking for your face…" : face === "error" ? "Face tracker unavailable" : "Loading face detection…"}</p>}
               </div>
               <span className="flex shrink-0 items-center gap-2 rounded-full bg-primary/10 px-4 py-2 text-sm font-medium">
                 <span className="h-2.5 w-2.5 rounded-full bg-primary" />{running ? moodLabel(score).replace("…", "") : "Idle"}
@@ -420,7 +474,7 @@ function Index() {
         <section id="privacy" className="panel p-5 text-sm text-muted-foreground sm:p-7">
           <p className="mb-2 text-base font-semibold text-foreground">Camera consent & your data</p>
           <p>
-            The camera only turns on after you press “Allow camera & begin”, and your browser asks for permission. With the SmartSpectra companion, video is processed on your computer by the Presage SDK and only numbers (pulse, breathing, HRV) are sent to this page. Without it, a rough estimate runs entirely in your browser. Nothing is recorded, stored, or shared, and readings vanish when you press End or close the tab. CalmPulse is a wellbeing exercise, not a medical device.
+            The camera turns on only after you consent in your browser. Frames go to the companion on this computer for SmartSpectra processing; readings return to this page. Without it, a rough browser estimate is used. CalmPulse does not record, upload, or save frames or readings; End clears the session and stops the camera. Face detection downloads its model from Google and software from jsDelivr. Presage needs internet access for its service; SDK telemetry and vendor retention have not been independently verified. No optional AI service is used. Your API key is saved only in the companion’s local .env file; delete that file to remove it. CalmPulse is not a medical device.
           </p>
         </section>
       </main>
@@ -473,7 +527,7 @@ function MetricCard({ icon, iconBg, label, value, unit, delta, higherIsGood, not
         <p className="mt-1 flex items-baseline gap-1.5 whitespace-nowrap">
           <span className="text-3xl font-bold">{value != null && Number.isFinite(value) && value > 0 ? Math.round(value) : "—"}</span>
           <span className="text-muted-foreground">{unit}</span>
-          {delta !== undefined && delta !== 0 && <span className={`ml-2 text-sm ${good ? "text-primary" : "text-pulse"}`}>{delta > 0 ? "↑" : "↓"} {Math.abs(delta)}</span>}
+          {value !== undefined && delta !== undefined && delta !== 0 && <span className={`ml-2 text-sm ${good ? "text-primary" : "text-pulse"}`}>{delta > 0 ? "↑" : "↓"} {Math.abs(delta)}</span>}
         </p>
         {note && <p className="text-xs text-muted-foreground">{note}</p>}
       </div>
@@ -493,6 +547,7 @@ function path(data: number[], w: number, h: number) {
 
 function Sparkline({ data, className, fill }: { data: number[]; className: string; fill?: boolean }) {
   const d = path(data, 200, 48);
+  if (!d) return <div className="flex h-full items-center justify-end text-xs text-muted-foreground">Waiting for signal…</div>;
   return (
     <svg viewBox="0 0 200 48" preserveAspectRatio="none" className={`h-full w-full ${className}`}>
       {!d && <line x1="0" y1="24" x2="200" y2="24" stroke="currentColor" strokeOpacity="0.25" strokeDasharray="4 4" />}

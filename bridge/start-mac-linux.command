@@ -1,9 +1,13 @@
 #!/bin/sh
 cd "$(dirname "$0")"
-[ -d node_modules ] || npm install
-if [ ! -f .env ]; then
-  printf "Paste your SmartSpectra API key and press Enter: "
-  read KEY
-  echo "SMARTSPECTRA_API_KEY=$KEY" > .env
+if ! command -v node >/dev/null 2>&1; then
+  printf 'Install Node.js 20+ from nodejs.org, then reopen this launcher.\n'
+else
+  if [ -d node_modules ] || npm install; then
+    node launch.mjs
+  else
+    printf 'Installation failed. Check your internet connection and try again.\n'
+  fi
 fi
-node server.mjs
+printf '\nPress Enter to close this window. '
+read REPLY
