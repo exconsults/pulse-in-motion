@@ -10,9 +10,9 @@ import { dirname, join } from "node:path";
 import { WebSocketServer } from "ws";
 import { decodeFrame } from "./protocol.mjs";
 import { FrameClock } from "./frame-clock.mjs";
+import { METRIC_TIERS, CONFIG_FAILED } from "./metrics.mjs";
 import {
   SmartSpectraSDK, PixelFormat, FrameTransform, decodeMetrics,
-  breathingMetrics, cardioMetrics,
 } from "@smartspectra/node-sdk";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -63,26 +63,38 @@ let frameClock = new FrameClock();
 let failed = false;
 let activeClient = null;
 let stopping = Promise.resolve();
+let tier = 0;
 
 async function startSdk() {
   if (sdk) return;
-  sdk = new SmartSpectraSDK({ apiKey, requestedMetrics: [...breathingMetrics, ...cardioMetrics] });
-  sdk.on("metrics", (buf) => {
+  const { label, metrics } = METRIC_TIERS[tier];
+  const mine = new SmartSpectraSDK({ apiKey, requestedMetrics: [...metrics] });
+  sdk = mine;
+  console.log(`Starting SmartSpectra (${label})…`);
+  mine.on("metrics", (buf) => {
     try {
       const m = decodeMetrics(buf);
       if (!Buffer.isBuffer(m)) send({ type: "metrics", metrics: m });
       else send({ type: "error", message: "SDK metrics decoder unavailable. Reinstall companion dependencies." });
     } catch { send({ type: "error", message: "Unable to decode SmartSpectra readings. Restart the companion." }); }
   });
-  sdk.on("validationStatus", (code, _ts, hint) => send({ type: "hint", hint: HINTS[code] ?? hint ?? "" }));
-  sdk.on("error", (code, message) => {
+  mine.on("validationStatus", (code, _ts, hint) => send({ type: "hint", hint: HINTS[code] ?? hint ?? "" }));
+  mine.on("error", (code, message) => {
+    if (sdk !== mine) return; // stale SDK being replaced
+    if (code === CONFIG_FAILED && tier < METRIC_TIERS.length - 1) {
+      tier += 1;
+      console.log(`SmartSpectra configuration failed; retrying with ${METRIC_TIERS[tier].label}.`);
+      send({ type: "hint", hint: "Restarting SmartSpectra with fewer readings…" });
+      stopping = stopSdk().then(() => { if (activeClient?.readyState === 1) return startSdk(); }).catch((e) => console.error(e));
+      return;
+    }
     if (code === 2) message = "API key rejected (403). Make a new key at physiology.presagetech.com and put it in bridge/.env.";
     if (code === 4) message = "Your Presage credits are used up.";
     console.error(`SmartSpectra error ${code}: ${message}`);
     send({ type: "error", message: `SmartSpectra ${code}: ${message}` });
   });
-  sdk.useCustomInput(FrameTransform.kNone);
-  sdk.start();
+  mine.useCustomInput(FrameTransform.kNone);
+  mine.start();
   frameClock = new FrameClock();
   failed = false;
   console.log("SmartSpectra started.");

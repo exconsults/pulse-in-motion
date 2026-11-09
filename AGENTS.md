@@ -33,3 +33,4 @@ use the editor.
 - Companion launchers use a shared Node setup prompt and a loopback-only, origin-checked, single-session WebSocket with validated RGBA frames; this keeps key handling platform-neutral and prevents unrelated sites or malformed input from reaching the native SDK.
 - Browser pulse estimation samples only a detected-face forehead region and clears samples when the face is lost, so background motion cannot be presented as human vitals.
 - Companion frame timestamps use a fresh session-relative microsecond clock and reject interruptions over the SDK's two-second limit; preserve real intervals rather than distorting physiological measurements with capped gaps.
+- The companion requests only metric codes listed in `bridge/metrics.mjs` (never device-key metrics such as arterial pressure, EDA, micromotion) and steps down to a smaller set on configuration failure; device-key provisioning fails on some machines and otherwise breaks the whole SDK session.

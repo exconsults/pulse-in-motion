@@ -2,7 +2,7 @@
   "name": "resonance-presage-bridge",
   "private": true,
   "type": "module",
-  "scripts": { "start": "node launch.mjs", "test": "node --test protocol.test.mjs frame-clock.test.mjs" },
+  "scripts": { "start": "node launch.mjs", "test": "node --test protocol.test.mjs frame-clock.test.mjs metrics.test.mjs" },
   "dependencies": {
     "@smartspectra/node-sdk": "3.4.0",
     "ws": "^8.18.0"
