@@ -1,5 +1,7 @@
 # Production-readiness follow-up
 
+- [x] Add a session-relative companion frame clock with timing regression tests; report long interruptions instead of manufacturing shorter intervals.
+
 - [x] Fix camera startup, stop/retry, and companion fallback handling.
 - [x] Harden companion startup and document double-click / VS Code setup.
 - [x] Run automated checks and browser camera-flow checks.

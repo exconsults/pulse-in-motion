@@ -30,6 +30,8 @@ If Chrome asks to allow "local network access", click Allow.
 - “Port 8787 is already in use” means another companion window is open; close it first.
 - Face landmarks need internet for model/software downloads. Face-tracker errors are shown on the camera.
 - Wait for readings with your face well lit and still. HRV requires SmartSpectra; browser estimates are not medical measurements.
+- After updating the companion, close its old window and run `npm start` inside `bridge` again. Keep the web app open in the foreground and press **Allow camera & begin**; the terminal does not open the camera.
+- Frame timestamps now begin with each camera session, not when the companion window opened. If frames stop for more than two seconds (for example, a background tab), the app reports the interruption; press **End** and begin again. Real time gaps are not shortened to manufacture readings.
 - Only one CalmPulse tab can use the companion at a time. The listener is restricted to this computer.
 
 ## Published website

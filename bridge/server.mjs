@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { WebSocketServer } from "ws";
 import { decodeFrame } from "./protocol.mjs";
+import { FrameClock } from "./frame-clock.mjs";
 import {
   SmartSpectraSDK, PixelFormat, FrameTransform, decodeMetrics,
   breathingMetrics, cardioMetrics,
@@ -58,7 +59,7 @@ const send = (msg) => {
 };
 
 let sdk = null;
-let lastTs = 0;
+let frameClock = new FrameClock();
 let failed = false;
 let activeClient = null;
 let stopping = Promise.resolve();
@@ -82,7 +83,7 @@ async function startSdk() {
   });
   sdk.useCustomInput(FrameTransform.kNone);
   sdk.start();
-  lastTs = 0;
+  frameClock = new FrameClock();
   failed = false;
   console.log("SmartSpectra started.");
 }
@@ -121,9 +122,12 @@ wss.on("connection", async (ws) => {
     const frame = decodeFrame(b);
     if (!frame) { ws.close(1008, "Invalid camera frame"); return; }
     const { width: w, height: h, pixels } = frame;
-    let ts = Math.round(performance.now() * 1000);
-    if (ts <= lastTs) ts = lastTs + 1;
-    lastTs = ts;
+    const ts = frameClock.next(performance.now());
+    if (ts === null) {
+      ws.send(JSON.stringify({ type: "error", message: "Camera frames paused for more than 2 seconds. Keep CalmPulse in the foreground, press End, then begin a new session." }));
+      ws.close(1008, "Camera frame timing interrupted");
+      return;
+    }
     try {
       sdk.sendFrame(pixels, w, h, w * 4, PixelFormat.kRGBA, ts);
     } catch (e) {
