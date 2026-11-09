@@ -27,6 +27,7 @@ If Chrome asks to allow "local network access", click Allow.
 - The terminal never opens the camera. Open the web app and press **Allow camera & begin**.
 - Close Zoom/Teams or other camera apps if the camera is busy. Allow camera permission for this site and retry.
 - “API key rejected (403)” means Presage rejected authentication; check your new key and Presage account access.
+- “SmartSpectra 3: configuration failed” with “device_id is required for remote model download” came from requesting arterial-pressure readings, which need a device key that some Windows computers cannot create. The companion now asks only for pulse, HRV and breathing, and retries with breathing only if configuration still fails.
 - “Port 8787 is already in use” means another companion window is open; close it first.
 - Face landmarks need internet for model/software downloads. Face-tracker errors are shown on the camera.
 - Wait for readings with your face well lit and still. HRV requires SmartSpectra; browser estimates are not medical measurements.
